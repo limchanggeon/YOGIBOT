@@ -428,6 +428,8 @@ const LogsPage = () => {
                   <td className="px-6 py-3 text-right">
                     {r.result === 'SUCCESS'
                       ? <span className="text-green-600 font-bold text-[10px] bg-green-50 px-2 py-0.5 rounded-full border border-green-100">완료</span>
+                      : r.result === 'RUNNING'
+                      ? <span className="text-amber-600 font-bold text-[10px] bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">진행중</span>
                       : <span className="text-red-600 font-bold text-[10px] bg-red-50 px-2 py-0.5 rounded-full border border-red-100">실패</span>}
                   </td>
                 </tr>

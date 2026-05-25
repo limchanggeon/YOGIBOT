@@ -121,6 +121,15 @@ class Ingestor:
         self.state.add_event(ev)
         print(f"[event] {ev.get('event_type')} {ev}", flush=True)
 
+        # 로봇이 목표 도착을 알리면 진행 중 미션을 마감
+        et = ev.get("event_type")
+        if et in ("MISSION_COMPLETE", "MISSION_FAILED"):
+            result = ev.get("result", "SUCCESS" if et == "MISSION_COMPLETE" else "FAILED")
+            m = self.state.finish_mission(result, ev.get("duration_sec"), ev.get("distance_m"))
+            if m:
+                self.store.append("missions", m)
+                print(f"[mission] {m['id']} → {m['status']}", flush=True)
+
     # ---- 서버 → 로봇 명령 publish ----------------------------------
     def publish_cmd(self, name: str, payload: dict):
         topic = f"robot/{ROBOT_ID}/cmd/{name}"

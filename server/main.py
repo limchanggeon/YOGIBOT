@@ -26,7 +26,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .mqtt_ingest import Ingestor
+from .mqtt_ingest import Ingestor, ROBOT_ID
 from .storage import JsonlStore, utc_now_iso
 
 SIM_MODE = os.environ.get("YOGI_SIM") == "1"
@@ -53,6 +53,10 @@ class RobotState:
         self.mission_state: Literal["IDLE", "RUNNING", "PAUSED"] = "IDLE"
         self.events: list[dict] = []
         self.cmd_log: list[dict] = []
+        # 미션 이력 (목표 전송 → 미션 생성, MISSION_COMPLETE 이벤트 → 종료)
+        self.missions: list[dict] = []
+        self._mseq = 0
+        self.current_mission: dict | None = None
 
     def update_telemetry(self, key: str, data: dict):
         self.latest[key] = data
@@ -61,6 +65,43 @@ class RobotState:
         ev.setdefault("timestamp", utc_now_iso())
         self.events.insert(0, ev)
         self.events = self.events[:50]
+
+    # ---- 미션 ----
+    def start_mission(self, x: float, y: float, yaw: float = 0.0) -> dict:
+        """목표가 전송되면 새 미션을 생성하고 진행 중으로 표시."""
+        self._mseq += 1
+        m = {
+            "id": f"M-{self._mseq:04d}",
+            "robot_id": ROBOT_ID,
+            "start_time": utc_now_iso(),
+            "end_time": None,
+            "goal": {"x": x, "y": y, "yaw": yaw},
+            "status": "RUNNING",
+            "duration_sec": None,
+            "distance_m": None,
+        }
+        self.missions.insert(0, m)
+        self.missions = self.missions[:200]
+        self.current_mission = m
+        self.mission_state = "RUNNING"
+        return m
+
+    def finish_mission(self, result: str = "SUCCESS",
+                       duration_sec=None, distance_m=None) -> dict | None:
+        """진행 중 미션을 종료(완료/실패)로 마감."""
+        m = self.current_mission
+        if not m:
+            return None
+        m["end_time"] = utc_now_iso()
+        m["status"] = result
+        if duration_sec is not None:
+            m["duration_sec"] = duration_sec
+        if distance_m is not None:
+            m["distance_m"] = distance_m
+        self.current_mission = None
+        if self.mission_state == "RUNNING":
+            self.mission_state = "IDLE"
+        return m
 
     def telemetry(self) -> dict:
         """프론트(App.jsx)가 기대하는 집계 객체.
@@ -163,25 +204,52 @@ def get_events(limit: int = 30):
     return {"events": state.events[:limit]}
 
 
+_WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]  # datetime.weekday(): 0=월
+
+
+def _fmt_row(m: dict) -> dict:
+    """미션 dict → 로그 테이블 행."""
+    st = m.get("start_time") or ""
+    try:
+        date = datetime.fromisoformat(st).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        date = st[:16].replace("T", " ")
+    dur = m.get("duration_sec")
+    dist = m.get("distance_m")
+    g = m.get("goal", {})
+    return {
+        "id": m.get("id"),
+        "date": date,
+        "from": "본부",
+        "to": f"({g.get('x', 0):.1f}, {g.get('y', 0):.1f})",
+        "duration": f"{int(dur)//60}분 {int(dur)%60}초" if dur is not None else "—",
+        "distance": f"{dist:.1f}m" if dist is not None else "—",
+        "result": m.get("status", "RUNNING"),
+    }
+
+
 @app.get("/api/logs")
 def get_logs():
-    # 미션 통계/이력 — 현 단계에서는 정적 예시 (PostgreSQL missions 테이블 자리)
+    """실제 미션 이력 기반 통계/테이블 (목업 없음)."""
+    missions = state.missions
+    done = [m for m in missions if m.get("duration_sec") is not None]
+    avg = int(sum(m["duration_sec"] for m in done) / len(done)) if done else 0
+    total_dist_m = sum((m.get("distance_m") or 0) for m in missions)
+
+    weekly = {d: 0 for d in _WEEKDAYS}
+    for m in missions:
+        try:
+            wd = _WEEKDAYS[datetime.fromisoformat(m["start_time"]).weekday()]
+            weekly[wd] += 1
+        except (ValueError, KeyError, TypeError):
+            pass
+
     return {
-        "totalMissions": 1042, "avgDurationSec": 168, "totalDistanceKm": 312.7,
-        "weekly": [
-            {"name": "월", "count": 142}, {"name": "화", "count": 168},
-            {"name": "수", "count": 134}, {"name": "목", "count": 192},
-            {"name": "금", "count": 211}, {"name": "토", "count": 88},
-            {"name": "일", "count": 107},
-        ],
-        "rows": [
-            {"id": "M-1042", "date": "2026-05-08 11:22", "from": "본부 A", "to": "301호",
-             "duration": "3분 7초", "distance": "64.3m", "result": "SUCCESS"},
-            {"id": "M-1041", "date": "2026-05-08 10:33", "from": "본부 A", "to": "208호",
-             "duration": "2분 22초", "distance": "51.7m", "result": "SUCCESS"},
-            {"id": "M-1040", "date": "2026-05-08 10:11", "from": "본부 A", "to": "102호",
-             "duration": "1분 32초", "distance": "28.4m", "result": "FAIL"},
-        ],
+        "totalMissions": len(missions),
+        "avgDurationSec": avg,
+        "totalDistanceKm": round(total_dist_m / 1000, 2),
+        "weekly": [{"name": d, "count": weekly[d]} for d in _WEEKDAYS],
+        "rows": [_fmt_row(m) for m in missions[:50]],
     }
 
 
@@ -242,10 +310,12 @@ def post_estop(req: EStop):
 def post_goal(g: Goal):
     if state.estop:
         return {"ok": False, "reason": "estop_engaged"}
-    state.mission_state = "RUNNING"
+    # 목표 전송 → 미션으로 처리 (생성 + JSONL 기록)
+    mission = state.start_mission(g.x, g.y, g.yaw)
+    store.append("missions", mission)
     ingestor.publish_cmd("goal", {"x": g.x, "y": g.y, "yaw": g.yaw})
-    _log_cmd("/goal_pose", f"x={g.x:.2f} y={g.y:.2f} yaw={g.yaw:.1f}°")
-    return {"ok": True}
+    _log_cmd("/goal_pose", f"x={g.x:.2f} y={g.y:.2f} yaw={g.yaw:.1f}° → {mission['id']}")
+    return {"ok": True, "mission_id": mission["id"]}
 
 
 @app.post("/api/mission")

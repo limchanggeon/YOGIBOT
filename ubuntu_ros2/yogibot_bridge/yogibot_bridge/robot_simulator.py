@@ -70,6 +70,7 @@ class RobotSimulator(Node):
         self.pub_goal = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self.pub_plan = self.create_publisher(Path, "/plan", 10)
         self.pub_event = self.create_publisher(String, "/yogibot/event", 10)
+        self.pub_sensor = None
         if HAS_SENSOR_STATE:
             self.pub_sensor = self.create_publisher(SensorState, "/sensor_state", 10)
 
@@ -174,16 +175,22 @@ class RobotSimulator(Node):
         amcl.pose.pose.orientation.z, amcl.pose.pose.orientation.w = qz, qw
         self.pub_amcl.publish(amcl)
 
-        if HAS_SENSOR_STATE:
-            ss = SensorState()
-            ss.header.stamp = now
-            ss.left_encoder = self.left_enc
-            ss.right_encoder = self.right_enc
-            ss.bumper = 0
-            ss.cliff = 0
-            ss.torque = True
-            ss.battery = float(11.5 + self.battery * 1.3)
-            self.pub_sensor.publish(ss)
+        if self.pub_sensor is not None:
+            # turtlebot3_msgs 버전마다 필드 타입(특히 cliff/battery)이 달라서
+            # float로 넣고, 그래도 안 맞으면 /sensor_state만 비활성화하고 계속 동작.
+            try:
+                ss = SensorState()
+                ss.header.stamp = now
+                ss.left_encoder = int(self.left_enc)
+                ss.right_encoder = int(self.right_enc)
+                ss.bumper = 0
+                ss.cliff = 0.0
+                ss.torque = True
+                ss.battery = float(11.5 + self.battery * 1.3)
+                self.pub_sensor.publish(ss)
+            except (AssertionError, AttributeError, TypeError) as e:
+                self.get_logger().warn(f"/sensor_state 발행 비활성화 (필드 불일치): {e}")
+                self.pub_sensor = None
 
     # ===== 타이머: 1Hz =====
     def tick_slow(self):
