@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>yogibot_bridge</name>
+  <version>0.1.0</version>
+  <description>TurtleBot3 Waffle 가상 시뮬레이터 + MQTT 브리지 (YogiBot Control Tower 연계)</description>
+  <maintainer email="csc.mokwon.boot@gmail.com">yogibot</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <!-- 선택: 설치돼 있으면 /sensor_state 도 발행 -->
+  <exec_depend>turtlebot3_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
