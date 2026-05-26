@@ -125,10 +125,15 @@ class Ingestor:
         et = ev.get("event_type")
         if et in ("MISSION_COMPLETE", "MISSION_FAILED"):
             result = ev.get("result", "SUCCESS" if et == "MISSION_COMPLETE" else "FAILED")
+            # 진행 중 미션이 있으면 마감, 없으면 이벤트로부터 완료 미션 생성
             m = self.state.finish_mission(result, ev.get("duration_sec"), ev.get("distance_m"))
-            if m:
-                self.store.append("missions", m)
-                print(f"[mission] {m['id']} → {m['status']}", flush=True)
+            if m is None:
+                m = self.state.record_completed_mission(ev, result)
+            self.store.append("missions", m)
+            # 도착 완료 → 지도의 목표/경로 마커 제거 (대기 상태)
+            self.state.latest.pop("goal_pose", None)
+            self.state.latest.pop("plan", None)
+            print(f"[mission] {m['id']} → {m['status']}", flush=True)
 
     # ---- 서버 → 로봇 명령 publish ----------------------------------
     def publish_cmd(self, name: str, payload: dict):

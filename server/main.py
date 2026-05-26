@@ -86,6 +86,26 @@ class RobotState:
         self.mission_state = "RUNNING"
         return m
 
+    def record_completed_mission(self, ev: dict, result: str = "SUCCESS") -> dict:
+        """진행 중 미션이 없을 때, MISSION_COMPLETE 이벤트로부터 완료 미션을 직접 기록.
+        (우분투 GUI 목표/자율주행처럼 /api/goal 을 거치지 않은 경우)"""
+        self._mseq += 1
+        g = ev.get("goal") or {}
+        end = ev.get("timestamp") or utc_now_iso()
+        m = {
+            "id": f"M-{self._mseq:04d}",
+            "robot_id": ev.get("robot_id", ROBOT_ID),
+            "start_time": end,        # 시작 시각 미상 → 완료 시각으로 대체
+            "end_time": end,
+            "goal": {"x": g.get("x"), "y": g.get("y"), "yaw": g.get("yaw", 0.0)},
+            "status": result,
+            "duration_sec": ev.get("duration_sec"),
+            "distance_m": ev.get("distance_m"),
+        }
+        self.missions.insert(0, m)
+        self.missions = self.missions[:200]
+        return m
+
     def finish_mission(self, result: str = "SUCCESS",
                        duration_sec=None, distance_m=None) -> dict | None:
         """진행 중 미션을 종료(완료/실패)로 마감."""
@@ -216,12 +236,14 @@ def _fmt_row(m: dict) -> dict:
         date = st[:16].replace("T", " ")
     dur = m.get("duration_sec")
     dist = m.get("distance_m")
-    g = m.get("goal", {})
+    g = m.get("goal") or {}
+    gx, gy = g.get("x"), g.get("y")
+    to = f"({gx:.1f}, {gy:.1f})" if isinstance(gx, (int, float)) and isinstance(gy, (int, float)) else "—"
     return {
         "id": m.get("id"),
         "date": date,
         "from": "본부",
-        "to": f"({g.get('x', 0):.1f}, {g.get('y', 0):.1f})",
+        "to": to,
         "duration": f"{int(dur)//60}분 {int(dur)%60}초" if dur is not None else "—",
         "distance": f"{dist:.1f}m" if dist is not None else "—",
         "result": m.get("status", "RUNNING"),

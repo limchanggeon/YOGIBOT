@@ -346,6 +346,8 @@ const LogsPage = () => {
   useEffect(() => {
     if (DEMO_MODE || !API_ENABLED) return;
     api.fetchLogs().then(setRemote);
+    const id = setInterval(() => api.fetchLogs().then(setRemote), 3000);
+    return () => clearInterval(id);
   }, []);
   const demo = DEMO_MODE ? DEMO_INIT.logs : remote;
   const statsData = demo

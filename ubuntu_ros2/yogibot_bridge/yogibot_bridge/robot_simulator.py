@@ -55,11 +55,15 @@ class RobotSimulator(Node):
         self.x, self.y, self.yaw = 3.21, -1.85, 0.0
         self.lin, self.ang = 0.0, 0.0
         self.battery = 0.84
-        self.goal = (8.4, 4.2)
+        self.goal = None               # 목표를 받기 전엔 대기(정지) — 실제 운영처럼
         self.estop = False
         self.manual_ticks = 0          # /cmd_vel override 잔여 틱
         self.left_enc, self.right_enc = 12453, 12401
         self._battery_low_fired = False
+        # 미션 추적 (실제 소요시간/거리 계산)
+        self.mission_start = None
+        self.mission_dist = 0.0
+        self._mseq = 0
 
         # ---- 퍼블리셔 ----
         self.pub_odom = self.create_publisher(Odometry, "/odom", 10)
@@ -95,7 +99,9 @@ class RobotSimulator(Node):
 
     def on_goal_cmd(self, msg: PoseStamped):
         self.goal = (msg.pose.position.x, msg.pose.position.y)
-        self.get_logger().info(f"새 목표 수신 {self.goal}")
+        self.mission_start = self.get_clock().now()
+        self.mission_dist = 0.0
+        self.get_logger().info(f"목표 수신 → 미션 시작 {self.goal}")
 
     def on_estop(self, msg: Bool):
         self.estop = msg.data
@@ -103,13 +109,14 @@ class RobotSimulator(Node):
 
     # ===== 시뮬레이션 스텝 (10Hz) =====
     def _step_motion(self):
+        dt = 0.1
         if self.estop:
             self.lin = self.ang = 0.0
             return
         if self.manual_ticks > 0:
-            self.manual_ticks -= 1
-        else:
-            # 목표를 향한 단순 자율주행
+            self.manual_ticks -= 1          # /cmd_vel 수동 주행 (on_cmd_vel이 lin/ang 설정)
+        elif self.goal is not None:
+            # 목표를 향한 자율주행
             dx, dy = self.goal[0] - self.x, self.goal[1] - self.y
             dist = math.hypot(dx, dy)
             target_yaw = math.atan2(dy, dx)
@@ -118,23 +125,35 @@ class RobotSimulator(Node):
             self.lin = 0.0 if dist < 0.15 else min(0.22, 0.4 * dist)
             if dist < 0.15:
                 self._on_goal_reached()
-        dt = 0.1
+                return
+        else:
+            self.lin = self.ang = 0.0       # 목표 없음 → 대기
+            return
         self.yaw += self.ang * dt
         self.x += self.lin * math.cos(self.yaw) * dt
         self.y += self.lin * math.sin(self.yaw) * dt
+        self.mission_dist += abs(self.lin) * dt
         self.left_enc += int(self.lin * 100)
         self.right_enc += int(self.lin * 100)
 
     def _on_goal_reached(self):
+        self.lin = self.ang = 0.0
+        self._mseq += 1
+        dur = 0.0
+        if self.mission_start is not None:
+            dur = (self.get_clock().now() - self.mission_start).nanoseconds / 1e9
         self._emit_event({
             "event_type": "MISSION_COMPLETE", "result": "SUCCESS",
-            "mission_id": random.randint(1000, 9999),
-            "goal": {"x": self.goal[0], "y": self.goal[1]},
-            "duration_sec": round(random.uniform(40, 180), 1),
-            "distance_m": round(random.uniform(10, 70), 2),
+            "mission_id": self._mseq,
+            "goal": {"x": round(self.goal[0], 2), "y": round(self.goal[1], 2)},
+            "duration_sec": round(dur, 1),
+            "distance_m": round(self.mission_dist, 2),
         })
-        # 새 목표 무작위 지정
-        self.goal = (round(random.uniform(-5, 9), 2), round(random.uniform(-5, 5), 2))
+        self.get_logger().info(
+            f"목표 도착 → 미션완료 #{self._mseq} ({dur:.1f}s, {self.mission_dist:.2f}m)")
+        # 다음 목표를 받을 때까지 대기 (랜덤 주행 안 함)
+        self.goal = None
+        self.mission_start = None
 
     # ===== 타이머: 10Hz =====
     def tick_fast(self):
@@ -225,30 +244,26 @@ class RobotSimulator(Node):
         scan.ranges = [round(random.uniform(0.4, 3.4), 2) for _ in range(360)]
         self.pub_scan.publish(scan)
 
-        # 가끔 장애물 감지 이벤트
-        if random.random() < 0.05:
-            self._emit_event({
-                "event_type": "OBSTACLE_DETECTED",
-                "pose": {"x": round(self.x, 2), "y": round(self.y, 2)},
-                "min_range_m": round(random.uniform(0.12, 0.3), 2), "action": "REPLANNING"})
+        # (자동 장애물 이벤트 제거 — 필요하면 GUI '장애물감지' 버튼으로 수동 발생)
 
-        # 목표 + 글로벌 경로
-        goal = PoseStamped()
-        goal.header.stamp = now
-        goal.header.frame_id = "map"
-        goal.pose.position.x, goal.pose.position.y = self.goal
-        self.pub_goal.publish(goal)
+        # 목표 + 글로벌 경로 (목표가 있을 때만 — 대기 중엔 발행 안 함)
+        if self.goal is not None:
+            goal = PoseStamped()
+            goal.header.stamp = now
+            goal.header.frame_id = "map"
+            goal.pose.position.x, goal.pose.position.y = self.goal
+            self.pub_goal.publish(goal)
 
-        path = Path()
-        path.header.stamp = now
-        path.header.frame_id = "map"
-        for i in range(12):
-            p = PoseStamped()
-            p.header.frame_id = "map"
-            p.pose.position.x = self.x + (self.goal[0] - self.x) * (i / 11)
-            p.pose.position.y = self.y + (self.goal[1] - self.y) * (i / 11)
-            path.poses.append(p)
-        self.pub_plan.publish(path)
+            path = Path()
+            path.header.stamp = now
+            path.header.frame_id = "map"
+            for i in range(12):
+                p = PoseStamped()
+                p.header.frame_id = "map"
+                p.pose.position.x = self.x + (self.goal[0] - self.x) * (i / 11)
+                p.pose.position.y = self.y + (self.goal[1] - self.y) * (i / 11)
+                path.poses.append(p)
+            self.pub_plan.publish(path)
 
     # ===== 이벤트 publish (std_msgs/String JSON) =====
     def _emit_event(self, ev: dict):
