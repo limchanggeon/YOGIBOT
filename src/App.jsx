@@ -91,13 +91,15 @@ function EventBadge({ event }) {
   return null;
 }
 
+const num = (v, d = 1) => (typeof v === 'number' ? v.toFixed(d) : '—');
+
 function EventDetail({ event }) {
   if (event.event_type === 'MISSION_COMPLETE')
-    return <span className="font-mono">#{event.mission_id} · {event.duration_sec}s · {event.distance_m}m</span>;
+    return <span className="font-mono">#{event.mission_id ?? '—'} · {event.duration_sec ?? '—'}s · {event.distance_m ?? '—'}m</span>;
   if (event.event_type === 'OBSTACLE_DETECTED')
-    return <span className="font-mono">({event.pose.x.toFixed(1)}, {event.pose.y.toFixed(1)}) · {event.min_range_m}m → {event.action}</span>;
+    return <span className="font-mono">({num(event.pose?.x)}, {num(event.pose?.y)}) · {event.min_range_m ?? '—'}m → {event.action ?? '—'}</span>;
   if (event.event_type === 'BATTERY_LOW')
-    return <span className="font-mono">{event.voltage}V · {Math.round(event.percentage * 100)}% → {event.action}</span>;
+    return <span className="font-mono">{event.voltage ?? '—'}V · {typeof event.percentage === 'number' ? Math.round(event.percentage * 100) : '—'}% → {event.action ?? '—'}</span>;
   return null;
 }
 

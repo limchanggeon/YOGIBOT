@@ -46,8 +46,13 @@ def build_event_yaml(event: dict) -> str:
 
 
 def pub_args(topic: str, msg_type: str, yaml: str) -> list[str]:
-    """`ros2 topic pub --once` 인자 리스트."""
-    return ["ros2", "topic", "pub", "--once", "-w", "0", topic, msg_type, yaml]
+    """`ros2 topic pub --once` 인자 리스트.
+
+    -w(매칭 구독 대기)를 0으로 두면 단발 publisher가 구독자 디스커버리 전에
+    쏘고 종료해 메시지가 유실된다. 기본값(1)을 써서 구독자가 매칭될 때까지
+    기다렸다 발행 → 확실히 전달. (구독자 없으면 GUI 쪽 timeout으로 ✗ 표시)
+    """
+    return ["ros2", "topic", "pub", "--once", topic, msg_type, yaml]
 
 
 def format_received_cmd(name: str, payload: dict) -> str:
@@ -94,8 +99,8 @@ JOG = {
 EVENTS = {
     "미션완료": {"event_type": "MISSION_COMPLETE", "result": "SUCCESS",
                 "duration_sec": 87.3, "distance_m": 12.45},
-    "장애물감지": {"event_type": "OBSTACLE_DETECTED", "min_range_m": 0.18,
-                  "action": "REPLANNING"},
+    "장애물감지": {"event_type": "OBSTACLE_DETECTED", "pose": {"x": 0.0, "y": 0.0},
+                  "min_range_m": 0.18, "action": "REPLANNING"},
     "배터리부족": {"event_type": "BATTERY_LOW", "voltage": 10.8,
                   "percentage": 0.15, "action": "RETURN_TO_BASE"},
 }
