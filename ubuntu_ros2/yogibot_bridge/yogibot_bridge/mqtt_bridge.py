@@ -156,9 +156,17 @@ class MqttBridge(Node):
         })
 
     def on_batt(self, m: BatteryState):
+        # TurtleBot3 OpenCR 펌웨어가 percentage 를 0~100 스케일로 보내는 알려진 버그.
+        # ROS sensor_msgs/BatteryState 표준은 0.0~1.0 → 1 보다 크면 /100 으로 정규화.
+        pct = float(m.percentage)
+        if pct != pct or pct == float("inf") or pct == float("-inf"):
+            pct = None
+        elif pct > 1.0:
+            pct = pct / 100.0
         self._publish("battery_state", {
             "voltage": round(m.voltage, 3), "current": round(m.current, 3),
-            "percentage": round(m.percentage, 4), "present": bool(m.present),
+            "percentage": round(pct, 4) if pct is not None else None,
+            "present": bool(m.present),
         })
 
     def on_amcl(self, m: PoseWithCovarianceStamped):
