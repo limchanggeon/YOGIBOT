@@ -61,6 +61,25 @@ class WaypointStore:
             self._save()
             return wp
 
+    def update(self, wid: int, label: str | None = None,
+               x: float | None = None, y: float | None = None,
+               yaw: float | None = None) -> dict | None:
+        """부분 갱신. None 아닌 필드만 덮어씀."""
+        with self._lock:
+            for w in self._items:
+                if w["id"] == wid:
+                    if label is not None:
+                        w["label"] = label
+                    if x is not None:
+                        w["x"] = float(x)
+                    if y is not None:
+                        w["y"] = float(y)
+                    if yaw is not None:
+                        w["yaw"] = float(yaw)
+                    self._save()
+                    return dict(w)
+            return None
+
     def delete(self, wid: int) -> bool:
         with self._lock:
             before = len(self._items)

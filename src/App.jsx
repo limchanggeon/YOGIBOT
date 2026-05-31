@@ -208,11 +208,19 @@ function OccupancyMap({ amclPose, goal, planData, waypoints = [], mode = 'view',
         const p = w2p(w.x, w.y);
         return (
           <g key={w.id}>
-            <circle cx={p.x} cy={p.y} r="3.6"
+            <circle cx={p.x} cy={p.y} r="2.8"
                     fill="#10b981" stroke="white" strokeWidth="0.7" />
-            <text x={p.x} y={p.y + 1.4}
-                  textAnchor="middle" fontSize="3.6"
-                  fontWeight="bold" fill="white">{w.label}</text>
+            {/* id 는 원 안에 작게, 사용자 라벨은 원 밖에 흰 외곽선으로 (긴 한글도 가독) */}
+            <text x={p.x} y={p.y + 1.1}
+                  textAnchor="middle" fontSize="2.6"
+                  fontWeight="bold" fill="white">{w.id}</text>
+            <text x={p.x} y={p.y - 4}
+                  textAnchor="middle" fontSize="3.4"
+                  fontWeight="bold" fill="#065f46"
+                  style={{ paintOrder: 'stroke', stroke: 'white',
+                           strokeWidth: 0.9, strokeLinejoin: 'round' }}>
+              {w.label}
+            </text>
           </g>
         );
       })}
@@ -475,9 +483,21 @@ const MissionPage = ({ waypoints, refetchWaypoints, amclPose, goal, planData }) 
 
   const onMapClick = async (xW, yW) => {
     if (mode === 'waypoint') {
-      const r = await api.addWaypoint(xW, yW, 0);
+      const name = window.prompt(
+        `이 위치의 이름 (비우면 번호 자동)\n좌표: (${xW.toFixed(2)}, ${yW.toFixed(2)})`,
+        ''
+      );
+      if (name === null) return;            // 취소 시 추가 안 함
+      const r = await api.addWaypoint(xW, yW, 0, name.trim() || null);
       if (r?.ok) refetchWaypoints();
     }
+  };
+
+  const handleRename = async (w) => {
+    const name = window.prompt(`이름 변경 (현재: ${w.label})`, w.label);
+    if (name === null || name.trim() === '' || name === w.label) return;
+    const r = await api.updateWaypoint(w.id, { label: name.trim() });
+    if (r?.ok) refetchWaypoints();
   };
 
   const handleGoto = async (id, label) => {
@@ -547,17 +567,20 @@ const MissionPage = ({ waypoints, refetchWaypoints, amclPose, goal, planData }) 
               {waypoints.map(w => (
                 <div key={w.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 hover:bg-gray-100 rounded border border-gray-100">
                   <button onClick={() => handleGoto(w.id, w.label)}
-                          className="w-9 h-9 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm shadow-sm transition-colors flex-shrink-0">
+                          title={`#${w.id} 로 자율 이동 — ${w.label}`}
+                          className="min-w-9 h-9 px-2.5 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-xs shadow-sm transition-colors flex-shrink-0 max-w-[8rem] truncate">
                     {w.label}
                   </button>
-                  <div className="flex-1 text-[11px] font-mono text-gray-600">
-                    x=<b>{w.x.toFixed(2)}</b> &nbsp; y=<b>{w.y.toFixed(2)}</b>
-                    <div className="text-[9px] text-gray-300">{w.created_at?.slice(0,19)}</div>
+                  <div className="flex-1 text-[11px] font-mono text-gray-600 min-w-0">
+                    <div className="truncate">x=<b>{w.x.toFixed(2)}</b> &nbsp; y=<b>{w.y.toFixed(2)}</b></div>
+                    <div className="text-[9px] text-gray-300">#{w.id} · {w.created_at?.slice(0,19)}</div>
                   </div>
+                  <button onClick={() => handleRename(w)}
+                          title="이름 변경"
+                          className="text-[12px] text-gray-400 hover:text-blue-600 px-1.5">✎</button>
                   <button onClick={() => handleDelete(w.id)}
-                          className="text-[10px] text-gray-400 hover:text-red-500 px-2">
-                    ✕
-                  </button>
+                          title="삭제"
+                          className="text-[10px] text-gray-400 hover:text-red-500 px-1.5">✕</button>
                 </div>
               ))}
             </div>

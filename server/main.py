@@ -398,6 +398,13 @@ class WaypointIn(BaseModel):
     label: Optional[str] = None
 
 
+class WaypointPatch(BaseModel):
+    label: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    yaw: Optional[float] = None
+
+
 def _log_cmd(topic: str, payload: str):
     entry = {"ts": datetime.now().strftime("%H:%M:%S"), "topic": topic, "payload": payload}
     state.cmd_log.insert(0, entry)
@@ -456,6 +463,14 @@ def get_waypoints():
 def add_waypoint(w: WaypointIn):
     item = waypoints.add(w.x, w.y, w.yaw, w.label)
     return {"ok": True, "item": item}
+
+
+@app.patch("/api/waypoints/{wid}")
+def patch_waypoint(wid: int, p: WaypointPatch):
+    w = waypoints.update(wid, label=p.label, x=p.x, y=p.y, yaw=p.yaw)
+    if w is None:
+        return {"ok": False, "reason": "not_found"}
+    return {"ok": True, "item": w}
 
 
 @app.delete("/api/waypoints/{wid}")

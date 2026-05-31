@@ -42,6 +42,21 @@ async function deleteJSON(path) {
   }
 }
 
+async function patchJSON(path, body) {
+  if (!API_ENABLED) return { ok: false, reason: 'no_api_url' };
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch (err) {
+    console.error(`PATCH ${path} failed`, err);
+    return { ok: false, reason: 'network_error' };
+  }
+}
+
 export const api = {
   sendCmdVel:      (linear_x, angular_z) => postJSON('/api/cmd_vel', { linear_x, angular_z }),
   sendEStop:       (engaged)             => postJSON('/api/emergency_stop', { engaged }),
@@ -53,6 +68,7 @@ export const api = {
   sendInitialPose: (x, y, yaw)           => postJSON('/api/initialpose', { x, y, yaw }),
   fetchWaypoints:  ()                    => getJSON('/api/waypoints'),
   addWaypoint:     (x, y, yaw = 0, label = null) => postJSON('/api/waypoints', { x, y, yaw, label }),
+  updateWaypoint:  (id, patch)           => patchJSON(`/api/waypoints/${id}`, patch),
   deleteWaypoint:  (id)                  => deleteJSON(`/api/waypoints/${id}`),
   clearWaypoints:  ()                    => postJSON('/api/waypoints/clear', {}),
   missionGoto:     (id)                  => postJSON(`/api/mission/goto/${id}`, {}),
