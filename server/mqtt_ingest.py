@@ -117,13 +117,25 @@ class Ingestor:
     def _handle_event(self, ev: dict):
         ev.setdefault("timestamp", utc_now_iso())
         ev.setdefault("robot_id", ROBOT_ID)
+
+        et = ev.get("event_type")
+        gid = ev.get("goal_id")
+        is_mission = et in ("MISSION_COMPLETE", "MISSION_FAILED")
+
+        # 브릿지 재기동 시 latched Nav2 status 가 옛 SUCCEEDED 를 다시 쏘는 케이스 차단.
+        # 같은 goal_id 의 미션 완료는 한 번만 처리 (이벤트 자체도 events.jsonl 에 안 남김).
+        if is_mission and gid and self.state.is_goal_seen(gid):
+            print(f"[event] dup goal_id {gid} → skip", flush=True)
+            return
+
         self.store.append("events", ev)
         self.state.add_event(ev)
         print(f"[event] {ev.get('event_type')} {ev}", flush=True)
 
         # 로봇이 목표 도착을 알리면 진행 중 미션을 마감
-        et = ev.get("event_type")
-        if et in ("MISSION_COMPLETE", "MISSION_FAILED"):
+        if is_mission:
+            if gid:
+                self.state.mark_goal_seen(gid)
             result = ev.get("result", "SUCCESS" if et == "MISSION_COMPLETE" else "FAILED")
             # 진행 중 미션이 있으면 마감, 없으면 이벤트로부터 완료 미션 생성
             m = self.state.finish_mission(result, ev.get("duration_sec"), ev.get("distance_m"))

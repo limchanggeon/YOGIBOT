@@ -62,6 +62,10 @@ class RobotState:
         self.missions: list[dict] = []
         self._mseq = 0
         self.current_mission: dict | None = None
+        # Nav2 액션 status 토픽이 TRANSIENT_LOCAL 라 브릿지 재기동 때 옛 SUCCEEDED 가
+        # 다시 들어와 유령 미션이 생기는 걸 막는 dedup 캐시 (goal_id 기준)
+        self._seen_goal_ids: set[str] = set()
+        self._seen_goal_order: list[str] = []
 
     def update_telemetry(self, key: str, data: dict):
         self.latest[key] = data
@@ -70,6 +74,21 @@ class RobotState:
         ev.setdefault("timestamp", utc_now_iso())
         self.events.insert(0, ev)
         self.events = self.events[:50]
+
+    # ---- goal_id dedup (브릿지 재기동 시 latched status 재전송 무시) ----
+    def is_goal_seen(self, gid: str) -> bool:
+        return gid in self._seen_goal_ids
+
+    def mark_goal_seen(self, gid: str) -> None:
+        if gid in self._seen_goal_ids:
+            return
+        self._seen_goal_ids.add(gid)
+        self._seen_goal_order.append(gid)
+        # 메모리 폭주 방지: 500 넘으면 오래된 200개 비움
+        if len(self._seen_goal_order) > 500:
+            evicted = self._seen_goal_order[:200]
+            self._seen_goal_order = self._seen_goal_order[200:]
+            self._seen_goal_ids.difference_update(evicted)
 
     # ---- 미션 ----
     def start_mission(self, x: float, y: float, yaw: float = 0.0) -> dict:
