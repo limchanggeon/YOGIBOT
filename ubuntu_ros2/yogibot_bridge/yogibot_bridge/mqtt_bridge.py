@@ -20,9 +20,12 @@ import os
 from datetime import datetime, timezone
 
 import math
+import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+
+from action_msgs.msg import GoalStatus, GoalStatusArray
 
 import paho.mqtt.client as mqtt
 
@@ -98,6 +101,14 @@ class MqttBridge(Node):
         self.create_subscription(String, "/yogibot/event", self.on_event, 10)
         if HAS_SENSOR_STATE:
             self.create_subscription(SensorState, "/sensor_state", self.on_sensor, 10)
+
+        # ---- Nav2 NavigateToPose 액션 결과 → MISSION_COMPLETE 이벤트 자동 발행 ----
+        # 실 Nav2는 /yogibot/event 를 안 쏘니, 우리가 액션 상태를 보고 대신 쏘아 줘야
+        # 서버의 미션 마감 로직(state.finish_mission)이 동작한다.
+        self._reported_goals: set[str] = set()
+        self._goal_start_t: dict[str, float] = {}
+        self.create_subscription(GoalStatusArray, "/navigate_to_pose/_action/status",
+                                 self.on_nav_status, 10)
 
     # ===== MQTT 연결/명령 =====
     def _on_connect(self, client, userdata, flags, rc):
@@ -242,6 +253,45 @@ class MqttBridge(Node):
             return
         ev.setdefault("timestamp", iso_now())
         self.cli.publish(f"robot/{self.robot_id}/event", json.dumps(ev), qos=1)
+
+    # ===== Nav2 NavigateToPose 액션 상태 → MISSION_COMPLETE 자동 발행 =====
+    def on_nav_status(self, msg: GoalStatusArray):
+        now = time.time()
+        for s in msg.status_list:
+            gid = bytes(s.goal_info.goal_id.uuid).hex()
+            st = s.status
+            if st in (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING):
+                # 시작 시각 기록 (한 번만)
+                self._goal_start_t.setdefault(gid, now)
+                continue
+            if st in (GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_ABORTED,
+                      GoalStatus.STATUS_CANCELED):
+                if gid in self._reported_goals:
+                    continue
+                self._reported_goals.add(gid)
+                start = self._goal_start_t.pop(gid, None)
+                dur = round(now - start, 1) if start else None
+                if st == GoalStatus.STATUS_SUCCEEDED:
+                    result, etype = "SUCCESS", "MISSION_COMPLETE"
+                elif st == GoalStatus.STATUS_ABORTED:
+                    result, etype = "FAILED", "MISSION_COMPLETE"
+                else:
+                    result, etype = "CANCELED", "MISSION_COMPLETE"
+                ev = {
+                    "event_type": etype,
+                    "result": result,
+                    "goal_id": gid[:12],
+                    "timestamp": iso_now(),
+                }
+                if dur is not None:
+                    ev["duration_sec"] = dur
+                self.cli.publish(f"robot/{self.robot_id}/event",
+                                 json.dumps(ev), qos=1)
+                self.get_logger().info(
+                    f"Nav2 결과: {result} (gid={gid[:8]}, dur={dur}s)")
+        # 무한 메모리 방지: 보고된 goal id 100개 넘으면 오래된 것 절반 비움
+        if len(self._reported_goals) > 100:
+            self._reported_goals = set(list(self._reported_goals)[-50:])
 
 
 def main():
