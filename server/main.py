@@ -24,10 +24,14 @@ from typing import Literal
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from .mqtt_ingest import Ingestor, ROBOT_ID
 from .storage import JsonlStore, utc_now_iso
+
+# 저장된 SLAM 지도 디렉토리 (map.pgm, map.yaml)
+MAP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "map")
 
 SIM_MODE = os.environ.get("YOGI_SIM") == "1"
 
@@ -278,6 +282,83 @@ def get_logs():
 @app.get("/api/cmd_log")
 def get_cmd_log():
     return {"log": state.cmd_log[:50]}
+
+
+# ============================================================
+# REST: 저장된 SLAM 지도 서빙 (대시보드 배경용)
+# ============================================================
+def _parse_map_yaml(path: str) -> dict:
+    """ROS nav2 map.yaml 의 핵심 필드 파싱 (PyYAML 의존성 회피용 간이 파서)."""
+    info = {}
+    import ast
+    with open(path) as f:
+        for line in f:
+            if ":" not in line:
+                continue
+            k, _, v = line.partition(":")
+            info[k.strip()] = v.strip()
+    res = float(info.get("resolution", 0.05))
+    origin = info.get("origin", "[0, 0, 0]")
+    try:
+        origin_list = ast.literal_eval(origin)
+    except (ValueError, SyntaxError):
+        origin_list = [0.0, 0.0, 0.0]
+    return {
+        "resolution": res,
+        "origin": [float(origin_list[0]), float(origin_list[1])],
+        "negate": int(info.get("negate", 0)),
+        "occupied_thresh": float(info.get("occupied_thresh", 0.65)),
+        "free_thresh": float(info.get("free_thresh", 0.25)),
+        "image": info.get("image", "map.pgm"),
+    }
+
+
+def _read_pgm_dims(path: str) -> tuple[int, int]:
+    """PGM(P5) 헤더에서 width/height 만 읽음."""
+    with open(path, "rb") as f:
+        f.readline()  # P5
+        line = f.readline().decode().strip()
+        while line.startswith("#"):
+            line = f.readline().decode().strip()
+        w, h = line.split()
+        return int(w), int(h)
+
+
+@app.get("/api/map/info")
+def map_info():
+    """대시보드가 좌표 변환에 쓰는 메타데이터."""
+    yaml_path = os.path.join(MAP_DIR, "map.yaml")
+    pgm_path = os.path.join(MAP_DIR, "map.pgm")
+    if not (os.path.exists(yaml_path) and os.path.exists(pgm_path)):
+        return {"ok": False, "reason": "no_map"}
+    meta = _parse_map_yaml(yaml_path)
+    w, h = _read_pgm_dims(pgm_path)
+    return {
+        "ok": True,
+        "width": w,
+        "height": h,
+        "resolution": meta["resolution"],     # m/cell
+        "origin": meta["origin"],              # [x_m, y_m] of (0,0) pixel
+        "image_url": "/api/map/image.png",
+    }
+
+
+@app.get("/api/map/image.png")
+def map_image():
+    """PGM 을 PNG 로 변환해 반환 (브라우저에서 바로 렌더 가능). 캐시 60초."""
+    pgm = os.path.join(MAP_DIR, "map.pgm")
+    if not os.path.exists(pgm):
+        return Response(status_code=404)
+    from PIL import Image
+    import io
+    img = Image.open(pgm)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=60"},
+    )
 
 
 # ============================================================

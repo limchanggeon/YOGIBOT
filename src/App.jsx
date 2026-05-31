@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, BarChart, Bar } from 'recharts';
-import { api, connectTelemetry, API_ENABLED } from './api';
+import { api, connectTelemetry, API_ENABLED, API_URL } from './api';
 
 // ============================================================
 // 유틸
@@ -128,7 +128,81 @@ function Recenter({ lat, lng }) {
 // ============================================================
 // 실시간 모니터링 페이지
 // ============================================================
-const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, sensorState, goal, speedHistory, events, videoRef }) => {
+// SLAM 저장맵 위에 로봇·목표·경로를 그리는 SVG 컴포넌트.
+// 서버의 /api/map/info 로 픽셀↔미터 매핑을 받고, /api/map/image.png 를 배경으로 렌더.
+function OccupancyMap({ amclPose, goal, planData }) {
+  const [info, setInfo] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    if (!API_URL) return;
+    fetch(`${API_URL}/api/map/info`)
+      .then(r => r.json())
+      .then(d => d.ok ? setInfo(d) : setErr(d.reason || 'no_map'))
+      .catch(e => setErr(String(e)));
+  }, []);
+
+  if (err) {
+    return <div className="w-full h-full flex items-center justify-center text-[10px] font-mono text-gray-300">
+      지도 없음 ({err})
+    </div>;
+  }
+  if (!info) {
+    return <div className="w-full h-full flex items-center justify-center text-[10px] font-mono text-gray-300">
+      지도 로딩 중…
+    </div>;
+  }
+
+  const { width, height, resolution, origin, image_url } = info;
+  // 월드(미터) → 픽셀. ROS map 원점은 좌하단, SVG 원점은 좌상단이라 y 뒤집기.
+  const w2p = (xw, yw) => ({
+    x: (xw - origin[0]) / resolution,
+    y: height - (yw - origin[1]) / resolution,
+  });
+
+  const r = amclPose?.pose?.pose?.position;
+  const robotPx = (r && typeof r.x === 'number') ? w2p(r.x, r.y) : null;
+  let yawRad = 0;
+  if (amclPose?.pose?.pose?.orientation) {
+    const q = amclPose.pose.pose.orientation;
+    yawRad = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+  }
+
+  const g = goal?.pose?.position;
+  const goalPx = (g && typeof g.x === 'number') ? w2p(g.x, g.y) : null;
+
+  const pathPx = planData?.poses?.map(p => w2p(p.pose.position.x, p.pose.position.y)) || [];
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`}
+         preserveAspectRatio="xMidYMid meet"
+         style={{ width: '100%', height: '100%', background: '#e5e7eb' }}>
+      <image href={`${API_URL}${image_url}`} width={width} height={height}
+             style={{ imageRendering: 'pixelated' }} />
+      {pathPx.length > 1 && (
+        <polyline points={pathPx.map(p => `${p.x},${p.y}`).join(' ')}
+                  stroke="#2563eb" strokeWidth="0.8" fill="none"
+                  strokeDasharray="2,1" opacity="0.7" />
+      )}
+      {goalPx && (
+        <g>
+          <circle cx={goalPx.x} cy={goalPx.y} r="3.5"
+                  fill="#ef4444" stroke="white" strokeWidth="0.6" />
+          <circle cx={goalPx.x} cy={goalPx.y} r="6" fill="none"
+                  stroke="#ef4444" strokeWidth="0.5" opacity="0.5" />
+        </g>
+      )}
+      {robotPx && (
+        <g transform={`translate(${robotPx.x},${robotPx.y}) rotate(${-yawRad * 180 / Math.PI})`}>
+          <circle r="3" fill="#3b82f6" stroke="white" strokeWidth="0.6" />
+          <line x1="0" y1="0" x2="5" y2="0" stroke="#1e3a8a" strokeWidth="0.8"
+                strokeLinecap="round" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
+const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, sensorState, goal, planData, speedHistory, events, videoRef }) => {
   const batteryPct = battery != null ? Math.round(battery.percentage * 100) : null;
   const linearVel  = odom?.twist.linear.x ?? null;
   const angularVel = odom?.twist.angular.z ?? null;
@@ -148,14 +222,8 @@ const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, 
               <span className="text-[8px] font-mono text-blue-400">— 경로</span>
             </div>
           </div>
-          <div className="flex-1 rounded-md overflow-hidden">
-            <MapContainer center={[robotPos.lat, robotPos.lng]} zoom={17} style={{ height: '100%', width: '100%' }}>
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              <Marker position={[robotPos.lat, robotPos.lng]} icon={robotIcon} />
-              {goalPos && <Marker position={[goalPos.lat, goalPos.lng]} icon={goalIcon} />}
-              {planPath.length > 0 && <Polyline positions={planPath} color="#3b82f6" weight={2.5} opacity={0.65} dashArray="7 5" />}
-              <Recenter lat={robotPos.lat} lng={robotPos.lng} />
-            </MapContainer>
+          <div className="flex-1 rounded-md overflow-hidden bg-gray-100">
+            <OccupancyMap amclPose={amclPose} goal={goal} planData={planData} />
           </div>
         </section>
         <section className="flex-1 bg-white border border-gray-200 rounded-lg p-2 flex flex-col shadow-sm min-h-0">
@@ -887,6 +955,7 @@ function App() {
           battery={battery}
           sensorState={sensorState}
           goal={goal}
+          planData={planData}
           speedHistory={speedHistory}
           events={events}
           videoRef={videoRef}

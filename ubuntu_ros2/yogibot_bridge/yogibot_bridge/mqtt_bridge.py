@@ -74,8 +74,10 @@ class MqttBridge(Node):
         self.cli.loop_start()
 
         # ---- 하행: 명령을 ROS2로 재발행할 퍼블리셔 ----
+        # 목표는 Nav2 표준 토픽 /goal_pose 로 보낸다 (실 로봇 Nav2가 이걸 구독).
+        # 같은 토픽을 텔레메트리로도 구독하므로 발행된 명령이 그대로 대시보드까지 반영됨.
         self.pub_cmd_vel = self.create_publisher(Twist, "/cmd_vel", 10)
-        self.pub_goal_cmd = self.create_publisher(PoseStamped, "/goal_pose_cmd", 10)
+        self.pub_goal = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self.pub_estop = self.create_publisher(Bool, "/emergency_stop", 10)
 
         # ---- 상행: ROS2 토픽 구독 → MQTT ----
@@ -110,9 +112,15 @@ class MqttBridge(Node):
         elif name == "goal":
             p = PoseStamped()
             p.header.frame_id = "map"
+            p.header.stamp = self.get_clock().now().to_msg()
             p.pose.position.x = float(payload.get("x", 0.0))
             p.pose.position.y = float(payload.get("y", 0.0))
-            self.pub_goal_cmd.publish(p)
+            # 단위 quaternion (yaw=0). yaw 지정해야 하면 payload.yaw 로 z,w 계산.
+            yaw = float(payload.get("yaw", 0.0))
+            import math
+            p.pose.orientation.z = math.sin(yaw / 2.0)
+            p.pose.orientation.w = math.cos(yaw / 2.0)
+            self.pub_goal.publish(p)
         elif name == "estop":
             self.pub_estop.publish(Bool(data=bool(payload.get("engaged", False))))
         elif name == "mission":
