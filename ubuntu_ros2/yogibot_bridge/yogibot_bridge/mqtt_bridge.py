@@ -124,7 +124,8 @@ class MqttBridge(Node):
             p.pose.position.y = float(payload.get("y", 0.0))
             # 단위 quaternion (yaw=0). yaw 지정해야 하면 payload.yaw 로 z,w 계산.
             yaw = float(payload.get("yaw", 0.0))
-            import math
+            # NOTE: 함수 안에 'import math' 절대 두지 말 것 — 그러면 math 가 함수 로컬로
+            # 묶여 다른 분기(initialpose 등)에서 UnboundLocalError 발생. 모듈 상단 import 사용.
             p.pose.orientation.z = math.sin(yaw / 2.0)
             p.pose.orientation.w = math.cos(yaw / 2.0)
             self.pub_goal.publish(p)
