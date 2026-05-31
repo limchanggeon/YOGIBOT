@@ -19,8 +19,10 @@ import json
 import os
 from datetime import datetime, timezone
 
+import math
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 import paho.mqtt.client as mqtt
 
@@ -85,7 +87,9 @@ class MqttBridge(Node):
         self.create_subscription(Imu, "/imu", self.on_imu, 10)
         self.create_subscription(BatteryState, "/battery_state", self.on_batt, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self.on_amcl, 10)
-        self.create_subscription(LaserScan, "/scan", self.on_scan, 10)
+        # LDS-02 같은 LiDAR는 /scan을 BEST_EFFORT QoS로 publish 한다.
+        # 기본 RELIABLE 로 구독하면 한 건도 못 받으니 sensor_data 프로파일로 매칭.
+        self.create_subscription(LaserScan, "/scan", self.on_scan, qos_profile_sensor_data)
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal, 10)
         self.create_subscription(Path, "/plan", self.on_plan, 10)
         self.create_subscription(String, "/yogibot/event", self.on_event, 10)
@@ -165,10 +169,17 @@ class MqttBridge(Node):
 
     def on_scan(self, m: LaserScan):
         # 360점 → scan_n점으로 다운샘플 (명세서 6. /scan 용량)
-        ranges = list(m.ranges)
-        step = max(1, len(ranges) // self.scan_n) if ranges else 1
-        ds = [round(r, 2) for r in ranges[::step]]
-        finite = [r for r in ds if r != float("inf") and r == r]
+        # 실 LiDAR는 측정 실패 시 inf/nan을 내보낸다. JSON 표준엔 그 값이 없어
+        # (json.dumps 가 Infinity 문자열을 뱉어 JSONL 파서가 깨짐) → None 으로 치환.
+        raw = list(m.ranges)
+        step = max(1, len(raw) // self.scan_n) if raw else 1
+        ds = []
+        for r in raw[::step]:
+            if r != r or r == float("inf") or r == float("-inf"):
+                ds.append(None)
+            else:
+                ds.append(round(float(r), 2))
+        finite = [r for r in ds if r is not None]
         self._publish("scan", {
             "angle_min": m.angle_min, "angle_max": m.angle_max,
             "angle_increment": m.angle_increment * step,
