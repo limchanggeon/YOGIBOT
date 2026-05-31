@@ -81,6 +81,9 @@ class MqttBridge(Node):
         self.pub_cmd_vel = self.create_publisher(Twist, "/cmd_vel", 10)
         self.pub_goal = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self.pub_estop = self.create_publisher(Bool, "/emergency_stop", 10)
+        # AMCL 초기 위치 시드 (Mac 대시보드 "초기 위치 설정" 클릭으로 트리거)
+        self.pub_initialpose = self.create_publisher(
+            PoseWithCovarianceStamped, "/initialpose", 10)
 
         # ---- 상행: ROS2 토픽 구독 → MQTT ----
         self.create_subscription(Odometry, "/odom", self.on_odom, 10)
@@ -129,6 +132,21 @@ class MqttBridge(Node):
             self.pub_estop.publish(Bool(data=bool(payload.get("engaged", False))))
         elif name == "mission":
             self.get_logger().info(f"mission 명령: {payload.get('action')}")
+        elif name == "initialpose":
+            # AMCL 시드 — 사용자가 대시보드에서 클릭한 (x,y,yaw)
+            p = PoseWithCovarianceStamped()
+            p.header.frame_id = "map"
+            p.header.stamp = self.get_clock().now().to_msg()
+            p.pose.pose.position.x = float(payload.get("x", 0.0))
+            p.pose.pose.position.y = float(payload.get("y", 0.0))
+            yaw = float(payload.get("yaw", 0.0))
+            p.pose.pose.orientation.z = math.sin(yaw / 2.0)
+            p.pose.pose.orientation.w = math.cos(yaw / 2.0)
+            # 공분산 (xx, yy, yaw-yaw)만 의미있는 값으로
+            cov = [0.0] * 36
+            cov[0] = 0.25; cov[7] = 0.25; cov[35] = 0.0685
+            p.pose.covariance = cov
+            self.pub_initialpose.publish(p)
         self.get_logger().info(f"하행 명령 {name}: {payload}")
 
     # ===== 상행 publish 헬퍼 =====

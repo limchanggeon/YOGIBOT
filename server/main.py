@@ -20,7 +20,7 @@ import os
 import random
 import time
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from .mqtt_ingest import Ingestor, ROBOT_ID
 from .storage import JsonlStore, utc_now_iso
+from .waypoints import WaypointStore
 
 # 저장된 SLAM 지도 디렉토리 (map.pgm, map.yaml)
 MAP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "map")
@@ -145,6 +146,7 @@ class RobotState:
 state = RobotState()
 store = JsonlStore()
 ingestor = Ingestor(state, store)
+waypoints = WaypointStore()
 
 
 # ============================================================
@@ -383,6 +385,19 @@ class Mission(BaseModel):
     action: Literal["start", "pause", "cancel", "return"]
 
 
+class InitialPose(BaseModel):
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
+class WaypointIn(BaseModel):
+    x: float
+    y: float
+    yaw: float = 0.0
+    label: Optional[str] = None
+
+
 def _log_cmd(topic: str, payload: str):
     entry = {"ts": datetime.now().strftime("%H:%M:%S"), "topic": topic, "payload": payload}
     state.cmd_log.insert(0, entry)
@@ -419,6 +434,57 @@ def post_goal(g: Goal):
     ingestor.publish_cmd("goal", {"x": g.x, "y": g.y, "yaw": g.yaw})
     _log_cmd("/goal_pose", f"x={g.x:.2f} y={g.y:.2f} yaw={g.yaw:.1f}° → {mission['id']}")
     return {"ok": True, "mission_id": mission["id"]}
+
+
+@app.post("/api/initialpose")
+def post_initialpose(p: InitialPose):
+    """AMCL 시드 — Mac 대시보드에서 지도 클릭으로 트리거."""
+    ingestor.publish_cmd("initialpose", {"x": p.x, "y": p.y, "yaw": p.yaw})
+    _log_cmd("/initialpose", f"x={p.x:.2f} y={p.y:.2f} yaw={p.yaw:.2f}")
+    return {"ok": True}
+
+
+# ============================================================
+# REST: 웨이포인트 (지도 위 1,2,3,... 점 + 미션 탭)
+# ============================================================
+@app.get("/api/waypoints")
+def get_waypoints():
+    return {"items": waypoints.list()}
+
+
+@app.post("/api/waypoints")
+def add_waypoint(w: WaypointIn):
+    item = waypoints.add(w.x, w.y, w.yaw, w.label)
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/waypoints/{wid}")
+def delete_waypoint(wid: int):
+    ok = waypoints.delete(wid)
+    return {"ok": ok}
+
+
+@app.post("/api/waypoints/clear")
+def clear_waypoints():
+    waypoints.clear()
+    return {"ok": True}
+
+
+@app.post("/api/mission/goto/{wid}")
+def mission_goto(wid: int):
+    """미션 탭에서 번호 클릭 — 그 웨이포인트로 Nav2 goal 전송 + 미션 기록."""
+    if state.estop:
+        return {"ok": False, "reason": "estop_engaged"}
+    wp = waypoints.get(wid)
+    if not wp:
+        return {"ok": False, "reason": "not_found"}
+    mission = state.start_mission(wp["x"], wp["y"], wp["yaw"])
+    mission["waypoint_id"] = wp["id"]
+    mission["waypoint_label"] = wp["label"]
+    store.append("missions", mission)
+    ingestor.publish_cmd("goal", {"x": wp["x"], "y": wp["y"], "yaw": wp["yaw"]})
+    _log_cmd("/goal_pose", f"WP-{wp['label']} ({wp['x']:.2f},{wp['y']:.2f}) → {mission['id']}")
+    return {"ok": True, "mission_id": mission["id"], "waypoint": wp}
 
 
 @app.post("/api/mission")

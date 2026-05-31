@@ -128,11 +128,12 @@ function Recenter({ lat, lng }) {
 // ============================================================
 // 실시간 모니터링 페이지
 // ============================================================
-// SLAM 저장맵 위에 로봇·목표·경로를 그리는 SVG 컴포넌트.
-// 서버의 /api/map/info 로 픽셀↔미터 매핑을 받고, /api/map/image.png 를 배경으로 렌더.
-function OccupancyMap({ amclPose, goal, planData }) {
+// SLAM 저장맵 위에 로봇·목표·경로·웨이포인트를 그리는 SVG 컴포넌트.
+// mode: 'view' | 'initialpose' | 'waypoint' — 클릭 시 onMapClick(x_m, y_m) 호출.
+function OccupancyMap({ amclPose, goal, planData, waypoints = [], mode = 'view', onMapClick }) {
   const [info, setInfo] = useState(null);
   const [err, setErr] = useState(null);
+  const svgRef = useRef(null);
   useEffect(() => {
     if (!API_URL) return;
     fetch(`${API_URL}/api/map/info`)
@@ -172,10 +173,30 @@ function OccupancyMap({ amclPose, goal, planData }) {
 
   const pathPx = planData?.poses?.map(p => w2p(p.pose.position.x, p.pose.position.y)) || [];
 
+  // 클릭 → SVG 픽셀 → 월드 미터 변환
+  const handleClick = (e) => {
+    if (mode === 'view' || !onMapClick) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const p = pt.matrixTransform(ctm.inverse());          // viewBox(=pixel) 좌표
+    const xW = p.x * resolution + origin[0];
+    const yW = (height - p.y) * resolution + origin[1];
+    onMapClick(xW, yW);
+  };
+
+  const clickable = mode !== 'view';
+  const cursor = clickable ? 'crosshair' : 'default';
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`}
+    <svg ref={svgRef}
+         viewBox={`0 0 ${width} ${height}`}
          preserveAspectRatio="xMidYMid meet"
-         style={{ width: '100%', height: '100%', background: '#e5e7eb' }}>
+         onClick={handleClick}
+         style={{ width: '100%', height: '100%', background: '#e5e7eb', cursor }}>
       <image href={`${API_URL}${image_url}`} width={width} height={height}
              style={{ imageRendering: 'pixelated' }} />
       {pathPx.length > 1 && (
@@ -183,6 +204,18 @@ function OccupancyMap({ amclPose, goal, planData }) {
                   stroke="#2563eb" strokeWidth="0.8" fill="none"
                   strokeDasharray="2,1" opacity="0.7" />
       )}
+      {waypoints.map(w => {
+        const p = w2p(w.x, w.y);
+        return (
+          <g key={w.id}>
+            <circle cx={p.x} cy={p.y} r="3.6"
+                    fill="#10b981" stroke="white" strokeWidth="0.7" />
+            <text x={p.x} y={p.y + 1.4}
+                  textAnchor="middle" fontSize="3.6"
+                  fontWeight="bold" fill="white">{w.label}</text>
+          </g>
+        );
+      })}
       {goalPx && (
         <g>
           <circle cx={goalPx.x} cy={goalPx.y} r="3.5"
@@ -198,16 +231,30 @@ function OccupancyMap({ amclPose, goal, planData }) {
                 strokeLinecap="round" />
         </g>
       )}
+      {clickable && (
+        <text x="2" y="6" fontSize="4" fill="#dc2626" fontWeight="bold">
+          {mode === 'initialpose' ? '클릭 → 초기 위치 설정' : '클릭 → 웨이포인트 추가'}
+        </text>
+      )}
     </svg>
   );
 }
 
-const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, sensorState, goal, planData, speedHistory, events, videoRef }) => {
+const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, sensorState, goal, planData, waypoints, speedHistory, events, videoRef }) => {
   const batteryPct = battery != null ? Math.round(battery.percentage * 100) : null;
   const linearVel  = odom?.twist.linear.x ?? null;
   const angularVel = odom?.twist.angular.z ?? null;
   const yawDeg     = amclPose ? quatToYaw(amclPose.pose.pose.orientation) : null;
   const isMoving   = linearVel != null && Math.abs(linearVel) > 0.01;
+
+  // 초기 위치 설정 모드 — 활성화 후 지도 클릭 1회로 /api/initialpose 전송
+  const [initMode, setInitMode] = useState(false);
+  const onMapClick = async (xW, yW) => {
+    if (initMode) {
+      await api.sendInitialPose(xW, yW, 0);
+      setInitMode(false);
+    }
+  };
 
   return (
     <main className="flex-1 grid grid-cols-12 gap-3 p-3 pt-2 min-h-0">
@@ -218,12 +265,22 @@ const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, 
             <h2 className="text-[10px] font-bold text-gray-400 flex items-center gap-1.5"><MapPin size={12}/> 이동 경로</h2>
             <div className="flex items-center gap-2">
               <span className="text-[8px] font-mono text-gray-300">● 로봇</span>
+              <span className="text-[8px] font-mono text-emerald-500">● WP</span>
               <span className="text-[8px] font-mono text-red-400">● 목표</span>
               <span className="text-[8px] font-mono text-blue-400">— 경로</span>
+              <button onClick={() => setInitMode(v => !v)}
+                      className={`text-[9px] font-bold px-2 py-0.5 rounded border transition-colors ${
+                        initMode ? 'bg-red-500 text-white border-red-500 animate-pulse'
+                                 : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                {initMode ? '● 클릭 대기' : '초기 위치 설정'}
+              </button>
             </div>
           </div>
           <div className="flex-1 rounded-md overflow-hidden bg-gray-100">
-            <OccupancyMap amclPose={amclPose} goal={goal} planData={planData} />
+            <OccupancyMap amclPose={amclPose} goal={goal} planData={planData}
+                          waypoints={waypoints}
+                          mode={initMode ? 'initialpose' : 'view'}
+                          onMapClick={onMapClick} />
           </div>
         </section>
         <section className="flex-1 bg-white border border-gray-200 rounded-lg p-2 flex flex-col shadow-sm min-h-0">
@@ -409,6 +466,126 @@ const MonitoringPage = ({ robotPos, goalPos, planPath, odom, amclPose, battery, 
 // ============================================================
 // 로그 & 이력 페이지
 // ============================================================
+// ============================================================
+// 미션 페이지 — 지도에 1,2,3,… 웨이포인트 찍고, 번호 클릭하면 그 좌표로 자동주행
+// ============================================================
+const MissionPage = ({ waypoints, refetchWaypoints, amclPose, goal, planData }) => {
+  const [mode, setMode] = useState('view');   // 'view' | 'waypoint'
+  const [lastGoto, setLastGoto] = useState(null);
+
+  const onMapClick = async (xW, yW) => {
+    if (mode === 'waypoint') {
+      const r = await api.addWaypoint(xW, yW, 0);
+      if (r?.ok) refetchWaypoints();
+    }
+  };
+
+  const handleGoto = async (id, label) => {
+    const r = await api.missionGoto(id);
+    if (r?.ok) {
+      setLastGoto({ id, label, mission_id: r.mission_id, ts: new Date().toLocaleTimeString() });
+    } else {
+      setLastGoto({ id, label, error: r?.reason || 'failed', ts: new Date().toLocaleTimeString() });
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm(`웨이포인트 #${id} 삭제할까요?`)) return;
+    await api.deleteWaypoint(id);
+    refetchWaypoints();
+  };
+
+  const handleClear = async () => {
+    if (!confirm('모든 웨이포인트를 삭제할까요?')) return;
+    await api.clearWaypoints();
+    refetchWaypoints();
+  };
+
+  return (
+    <main className="flex-1 grid grid-cols-12 gap-3 p-3 pt-2 min-h-0">
+      {/* 좌측: 지도 + 모드 토글 */}
+      <div className="col-span-7 flex flex-col gap-2 min-h-0">
+        <div className="flex items-center justify-between px-2 py-1.5 bg-white border border-gray-200 rounded-md shadow-sm">
+          <h2 className="text-xs font-bold text-gray-600 flex items-center gap-2">
+            <MapPin size={14} /> 미션 지도
+            <span className="text-[10px] font-mono text-gray-300 ml-2">웨이포인트 {waypoints.length}개</span>
+          </h2>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setMode(m => m === 'waypoint' ? 'view' : 'waypoint')}
+                    className={`text-[11px] font-bold px-3 py-1 rounded border transition-colors ${
+                      mode === 'waypoint' ? 'bg-emerald-500 text-white border-emerald-500 animate-pulse'
+                                          : 'bg-white text-emerald-600 border-emerald-300 hover:bg-emerald-50'}`}>
+              {mode === 'waypoint' ? '● 클릭하여 추가 (완료 클릭)' : '+ 웨이포인트 추가'}
+            </button>
+            <button onClick={handleClear}
+                    disabled={waypoints.length === 0}
+                    className="text-[11px] font-bold px-3 py-1 rounded border bg-white text-gray-500 border-gray-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-30 disabled:cursor-not-allowed">
+              전체 삭제
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 bg-white border border-gray-200 rounded-md overflow-hidden shadow-sm">
+          <OccupancyMap amclPose={amclPose} goal={goal} planData={planData}
+                        waypoints={waypoints}
+                        mode={mode}
+                        onMapClick={onMapClick} />
+        </div>
+      </div>
+
+      {/* 우측: 웨이포인트 리스트 + GO 버튼 */}
+      <div className="col-span-5 flex flex-col gap-2 min-h-0">
+        <div className="bg-white border border-gray-200 rounded-md p-3 shadow-sm">
+          <h3 className="text-xs font-bold text-gray-600 mb-2 flex items-center gap-2">
+            <Send size={13} /> 웨이포인트 목록
+          </h3>
+          {waypoints.length === 0 ? (
+            <p className="text-[11px] font-mono text-gray-300 py-6 text-center">
+              지도에서 <b>+ 웨이포인트 추가</b> 모드를 켜고 위치를 클릭하세요.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-1.5 max-h-[55vh] overflow-y-auto pr-1">
+              {waypoints.map(w => (
+                <div key={w.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 hover:bg-gray-100 rounded border border-gray-100">
+                  <button onClick={() => handleGoto(w.id, w.label)}
+                          className="w-9 h-9 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm shadow-sm transition-colors flex-shrink-0">
+                    {w.label}
+                  </button>
+                  <div className="flex-1 text-[11px] font-mono text-gray-600">
+                    x=<b>{w.x.toFixed(2)}</b> &nbsp; y=<b>{w.y.toFixed(2)}</b>
+                    <div className="text-[9px] text-gray-300">{w.created_at?.slice(0,19)}</div>
+                  </div>
+                  <button onClick={() => handleDelete(w.id)}
+                          className="text-[10px] text-gray-400 hover:text-red-500 px-2">
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-md p-3 shadow-sm">
+          <h3 className="text-xs font-bold text-gray-600 mb-2">최근 미션 전송</h3>
+          {lastGoto ? (
+            <div className="text-[11px] font-mono">
+              [{lastGoto.ts}] WP-{lastGoto.label} →&nbsp;
+              {lastGoto.error
+                ? <span className="text-red-500">실패 ({lastGoto.error})</span>
+                : <span className="text-emerald-600">미션 {lastGoto.mission_id} 시작</span>}
+            </div>
+          ) : (
+            <p className="text-[11px] font-mono text-gray-300">아직 없음</p>
+          )}
+          <p className="text-[10px] text-gray-400 mt-2 leading-snug">
+            웨이포인트 번호 클릭 → 그 좌표로 Nav2 자율주행 시작.
+            로봇이 도착하면 로그&이력 탭에 미션 완료로 기록됩니다.
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+};
+
 const LogsPage = () => {
   const [remote, setRemote] = useState(null);
   useEffect(() => {
@@ -822,6 +999,17 @@ function App() {
   const [goal, setGoal]             = useState(DEMO_MODE ? DEMO_INIT.goal : null);
   const [planData, setPlanData]     = useState(DEMO_MODE ? DEMO_INIT.planData : null);
   const [events, setEvents]         = useState(DEMO_MODE ? DEMO_INIT.events : []);
+  const [waypoints, setWaypoints]   = useState([]);
+  const refetchWaypoints = () => {
+    if (!API_ENABLED) return;
+    api.fetchWaypoints().then(d => d?.items && setWaypoints(d.items));
+  };
+  useEffect(() => {
+    if (DEMO_MODE || !API_ENABLED) return;
+    refetchWaypoints();
+    const id = setInterval(refetchWaypoints, 5000);
+    return () => clearInterval(id);
+  }, []);
   const [speedHistory, setSpeedHistory] = useState(
     DEMO_MODE
       ? DEMO_INIT.speedHistory
@@ -938,6 +1126,7 @@ function App() {
         <div className="flex items-center gap-8">
           <nav className="flex gap-6 text-xs font-bold text-gray-400">
             <button onClick={() => setActiveTab('monitoring')} className={`pb-0.5 transition-all ${activeTab === 'monitoring' ? 'text-blue-600 border-b-2 border-blue-600' : 'hover:text-gray-600'}`}>실시간 모니터링</button>
+            <button onClick={() => setActiveTab('mission')} className={`pb-0.5 transition-all ${activeTab === 'mission' ? 'text-blue-600 border-b-2 border-blue-600' : 'hover:text-gray-600'}`}>미션</button>
             <button onClick={() => setActiveTab('logs')} className={`pb-0.5 transition-all ${activeTab === 'logs' ? 'text-blue-600 border-b-2 border-blue-600' : 'hover:text-gray-600'}`}>로그 & 이력</button>
             <button onClick={() => setActiveTab('control')} className={`pb-0.5 transition-all ${activeTab === 'control' ? 'text-blue-600 border-b-2 border-blue-600' : 'hover:text-gray-600'}`}>원격 제어</button>
           </nav>
@@ -956,10 +1145,15 @@ function App() {
           sensorState={sensorState}
           goal={goal}
           planData={planData}
+          waypoints={waypoints}
           speedHistory={speedHistory}
           events={events}
           videoRef={videoRef}
         />
+      )}
+      {activeTab === 'mission' && (
+        <MissionPage waypoints={waypoints} refetchWaypoints={refetchWaypoints}
+                     amclPose={amclPose} goal={goal} planData={planData} />
       )}
       {activeTab === 'logs' && <LogsPage />}
       {activeTab === 'control' && (

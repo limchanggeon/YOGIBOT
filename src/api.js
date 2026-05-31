@@ -31,13 +31,31 @@ async function getJSON(path) {
   }
 }
 
+async function deleteJSON(path) {
+  if (!API_ENABLED) return { ok: false, reason: 'no_api_url' };
+  try {
+    const res = await fetch(`${API_URL}${path}`, { method: 'DELETE' });
+    return await res.json();
+  } catch (err) {
+    console.error(`DELETE ${path} failed`, err);
+    return { ok: false, reason: 'network_error' };
+  }
+}
+
 export const api = {
-  sendCmdVel: (linear_x, angular_z) => postJSON('/api/cmd_vel', { linear_x, angular_z }),
-  sendEStop:  (engaged)             => postJSON('/api/emergency_stop', { engaged }),
-  sendGoal:   (x, y, yaw)           => postJSON('/api/goal', { x, y, yaw }),
-  sendMission:(action)              => postJSON('/api/mission', { action }),
-  fetchEvents:()                    => getJSON('/api/events'),
-  fetchLogs:  ()                    => getJSON('/api/logs'),
+  sendCmdVel:      (linear_x, angular_z) => postJSON('/api/cmd_vel', { linear_x, angular_z }),
+  sendEStop:       (engaged)             => postJSON('/api/emergency_stop', { engaged }),
+  sendGoal:        (x, y, yaw)           => postJSON('/api/goal', { x, y, yaw }),
+  sendMission:     (action)              => postJSON('/api/mission', { action }),
+  fetchEvents:     ()                    => getJSON('/api/events'),
+  fetchLogs:       ()                    => getJSON('/api/logs'),
+  // 자율주행 추가
+  sendInitialPose: (x, y, yaw)           => postJSON('/api/initialpose', { x, y, yaw }),
+  fetchWaypoints:  ()                    => getJSON('/api/waypoints'),
+  addWaypoint:     (x, y, yaw = 0, label = null) => postJSON('/api/waypoints', { x, y, yaw, label }),
+  deleteWaypoint:  (id)                  => deleteJSON(`/api/waypoints/${id}`),
+  clearWaypoints:  ()                    => postJSON('/api/waypoints/clear', {}),
+  missionGoto:     (id)                  => postJSON(`/api/mission/goto/${id}`, {}),
 };
 
 // 텔레메트리 WebSocket 구독. 자동 재연결 포함.
